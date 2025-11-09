@@ -5,96 +5,19 @@
   <title>arc_map.pdf Viewer</title>
 
   <!-- PDF.js (UMD build) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      overflow: hidden;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #111;
-      color: #eee;
-    }
-
-    #toolbar {
-      position: fixed;
-      top: 10px;
-      left: 10px;
-      z-index: 10;
-      display: flex;
-      gap: 8px;
-      padding: 6px 8px;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(6px);
-      border-radius: 8px;
-      align-items: center;
-      font-size: 13px;
-      user-select: none;
-    }
-
-    #toolbar button {
-      border: none;
-      padding: 4px 8px;
-      border-radius: 4px;
-      background: #222;
-      color: #eee;
-      cursor: pointer;
-      font-size: 12px;
-    }
-
-    #toolbar button:hover {
-      background: #333;
-    }
-
-    #scaleDisplay {
-      min-width: 70px;
-      text-align: right;
-      opacity: 0.9;
-    }
-
-    #viewer {
-      position: absolute;
-      inset: 0;
-      overflow: scroll;
-      cursor: grab;
-      background: #111;
-    }
-
-    #viewer.dragging {
-      cursor: grabbing;
-    }
-
-    #pdf-canvas {
-      display: block;
-      margin: auto;
-      image-rendering: crisp-edges;
-      image-rendering: pixelated;
-    }
-  </style>
-</head>
-<body>
-  <div id="toolbar">
-    <button id="zoomOut">-</button>
-    <button id="zoomIn">+</button>
-    <button id="zoomReset">Reset</button>
-    <span id="scaleDisplay">100%</span>
-    <span style="opacity:0.7;">(Scroll = pan, Ctrl+Scroll = zoom)</span>
-  </div>
-
-  <div id="viewer">
-    <canvas id="pdf-canvas"></canvas>
-  </div>
-
   <script>
     const PDF_URL = 'arc_map.pdf';
   
     let pdfDoc = null;
     let pageNum = 1;
+  
+    // Actual render scale (what the PDF is drawn at)
     let scale = 1.0;
+  
+    // Limits (bump MAX_SCALE if you want to go feral)
     const MIN_SCALE = 0.1;
-    const ZOOM_STEP = 0.25;
+    const MAX_SCALE = 32;
+    const BUTTON_ZOOM_STEP = 0.25;
   
     const viewer = document.getElementById('viewer');
     const canvas = document.getElementById('pdf-canvas');
@@ -104,19 +27,36 @@
     const zoomResetBtn = document.getElementById('zoomReset');
     const scaleDisplay = document.getElementById('scaleDisplay');
   
+    let pdfReady = false;
+  
+    // Render queue flags so we don't spam renders
+    let isRendering = false;
+    let zoomFrameRequested = false;
+    let lastZoomScale = scale;
+    let lastZoomX = 0;
+    let lastZoomY = 0;
+  
+    // Configure PDF.js worker
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
   
-    pdfjsLib.getDocument(PDF_URL).promise.then(function (pdf) {
+    // Load the PDF
+    pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
       pdfDoc = pdf;
-      renderPage();
-    }).catch(function (error) {
+      pdfReady = true;
+      renderPage(); // initial render
+    }).catch((error) => {
       console.error('Error loading PDF:', error);
       scaleDisplay.textContent = 'Error loading PDF';
     });
   
     function renderPage() {
-      pdfDoc.getPage(pageNum).then(function (page) {
+      if (!pdfReady || !pdfDoc) return;
+      if (isRendering) return; // let the queued zoom handle updates
+  
+      isRendering = true;
+  
+      pdfDoc.getPage(pageNum).then((page) => {
         const viewport = page.getViewport({ scale });
   
         canvas.width = viewport.width;
@@ -127,8 +67,20 @@
           viewport: viewport
         };
   
-        page.render(renderContext);
+        const renderTask = page.render(renderContext);
+        return renderTask.promise;
+      }).then(() => {
+        isRendering = false;
         updateScaleDisplay();
+  
+        // If something queued another zoom during render, handle it now
+        if (zoomFrameRequested) {
+          zoomFrameRequested = false;
+          setScale(lastZoomScale, lastZoomX, lastZoomY);
+        }
+      }).catch((err) => {
+        isRendering = false;
+        console.error('Render error:', err);
       });
     }
   
@@ -137,57 +89,91 @@
     }
   
     function setScale(newScale, centerX, centerY) {
+      if (!pdfReady) return;
+  
+      // Clamp
       if (newScale < MIN_SCALE) newScale = MIN_SCALE;
+      if (newScale > MAX_SCALE) newScale = MAX_SCALE;
+  
+      // Ignore microscopic changes to avoid stutter
+      if (Math.abs(newScale - scale) < scale * 0.02) return;
   
       const rect = viewer.getBoundingClientRect();
+  
+      // Current scroll position mapped into PDF coords
       const vx = (centerX - rect.left + viewer.scrollLeft) / scale;
       const vy = (centerY - rect.top + viewer.scrollTop) / scale;
   
       scale = newScale;
+  
       renderPage();
   
+      // After render, recenter so the point under cursor stays under cursor
       requestAnimationFrame(() => {
-        viewer.scrollLeft = vx * scale - (centerX - rect.left);
-        viewer.scrollTop = vy * scale - (centerY - rect.top);
+        const newScrollLeft = vx * scale - (centerX - rect.left);
+        const newScrollTop = vy * scale - (centerY - rect.top);
+  
+        viewer.scrollLeft = newScrollLeft;
+        viewer.scrollTop = newScrollTop;
       });
     }
   
-    // Toolbar zoom
+    // Smooth-ish zoom scheduler for wheel/pinch events
+    function smartZoom(targetScale, cx, cy) {
+      if (!pdfReady) return;
+  
+      // Clamp
+      if (targetScale < MIN_SCALE) targetScale = MIN_SCALE;
+      if (targetScale > MAX_SCALE) targetScale = MAX_SCALE;
+  
+      // Coalesce rapid events into one render per frame
+      lastZoomScale = targetScale;
+      lastZoomX = cx;
+      lastZoomY = cy;
+  
+      if (!zoomFrameRequested && !isRendering) {
+        zoomFrameRequested = true;
+        requestAnimationFrame(() => {
+          zoomFrameRequested = false;
+          setScale(lastZoomScale, lastZoomX, lastZoomY);
+        });
+      }
+    }
+  
+    // Toolbar zoom (uses fixed steps)
     zoomInBtn.addEventListener('click', () => {
-      setScale(scale + ZOOM_STEP, viewer.clientWidth / 2, viewer.clientHeight / 2);
+      const cx = viewer.clientWidth / 2;
+      const cy = viewer.clientHeight / 2;
+      smartZoom(scale + BUTTON_ZOOM_STEP, cx, cy);
     });
   
     zoomOutBtn.addEventListener('click', () => {
-      setScale(scale - ZOOM_STEP, viewer.clientWidth / 2, viewer.clientHeight / 2);
+      const cx = viewer.clientWidth / 2;
+      const cy = viewer.clientHeight / 2;
+      smartZoom(scale - BUTTON_ZOOM_STEP, cx, cy);
     });
   
     zoomResetBtn.addEventListener('click', () => {
-      setScale(1.0, viewer.clientWidth / 2, viewer.clientHeight / 2);
+      const cx = viewer.clientWidth / 2;
+      const cy = viewer.clientHeight / 2;
+      smartZoom(1.0, cx, cy);
     });
   
-    // Smoothed Ctrl/Cmd + wheel zoom (prevents glitchy spam on Mac trackpads)
-    let zoomWheelAccum = 0;
-    const ZOOM_THRESHOLD = 80; // tweak if you want faster/slower response
-  
+    // Ctrl/Cmd + wheel / pinch zoom (Mac trackpad friendly)
     viewer.addEventListener('wheel', (e) => {
-      // Plain two-finger scroll = pan (default browser scroll). Leave it alone.
-      // Ctrl/Cmd + scroll (or pinch mapped as such) = zoom in steps.
+      if (!pdfReady) return;
+  
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
   
-        zoomWheelAccum += e.deltaY;
+        // Trackpad pinch usually gives small continuous deltaY.
+        // Use an exponential factor for smooth zoom.
+        const zoomFactor = Math.exp(-e.deltaY * 0.002);
+        const targetScale = scale * zoomFactor;
   
-        if (Math.abs(zoomWheelAccum) >= ZOOM_THRESHOLD) {
-          const direction = zoomWheelAccum < 0 ? 1 : -1; // up = zoom in, down = zoom out
-          const newScale = scale + direction * ZOOM_STEP;
-  
-          const cx = e.clientX;
-          const cy = e.clientY;
-  
-          zoomWheelAccum = 0;
-          setScale(newScale, cx, cy);
-        }
+        smartZoom(targetScale, e.clientX, e.clientY);
       }
+      // plain wheel = scroll/pan, let browser handle it
     }, { passive: false });
   
     // Click-and-drag panning
