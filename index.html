@@ -1,109 +1,213 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title>PDF Viewer</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            overflow: hidden;
-            touch-action: pan-x pan-y pinch-zoom;
-            background: #2b2b2b;
-        }
-        
-        #pdf-container {
-            width: 100%;
-            height: 100vh;
-            overflow: auto;
-            -webkit-overflow-scrolling: touch;
-        }
-        
-        canvas {
-            display: block;
-            margin: 0 auto;
-            background: white;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-        
-        .page {
-            margin: 10px auto;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>arc_map.pdf Viewer</title>
+
+  <!-- PDF.js (UMD build) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #111;
+      color: #eee;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+      padding: 6px 8px;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(6px);
+      border-radius: 8px;
+      align-items: center;
+      font-size: 13px;
+      user-select: none;
+    }
+
+    #toolbar button {
+      border: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    #toolbar button:hover {
+      background: #333;
+    }
+
+    #scaleDisplay {
+      min-width: 70px;
+      text-align: right;
+      opacity: 0.9;
+    }
+
+    #viewer {
+      position: absolute;
+      inset: 0;
+      overflow: scroll;
+      cursor: grab;
+      background: #111;
+    }
+
+    #viewer.dragging {
+      cursor: grabbing;
+    }
+
+    #pdf-canvas {
+      display: block;
+      margin: auto;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+  </style>
 </head>
 <body>
-    <div id="pdf-container"></div>
+  <div id="toolbar">
+    <button id="zoomOut">-</button>
+    <button id="zoomIn">+</button>
+    <button id="zoomReset">Reset</button>
+    <span id="scaleDisplay">100%</span>
+    <span style="opacity:0.7;">(Scroll = pan, Ctrl+Scroll = zoom)</span>
+  </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script>
-        // Set worker source
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  <div id="viewer">
+    <canvas id="pdf-canvas"></canvas>
+  </div>
 
-        // Base64 PDF data (you'll need to replace this with your actual PDF data)
-        const pdfData = atob('JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9MZW5ndGggMzA+PnN0cmVhbQp4nCvkMlQwULCx0XfOL80rUTDU985MKY62BAAFEgUtCmVuZHN0cmVhbQplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDEgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXS9Db250ZW50cyAzIDAgUi9SZXNvdXJjZXM8PDw+Pj4+PgplbmRvYmoKMSAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1syIDAgUl0+PgplbmRvYmoKNCAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMSAwIFI+PgplbmRvYmoKNSAwIG9iago8PC9Qcm9kdWNlcihpVGV4dKggNy4xLjEwIMKpMjAwMC0yMDE4IGlUZXh0IEdyb3VwIE5WIFwoQUdQTC12ZXJzaW9uXCkpL01vZERhdGUoRDoyMDI0MTEwOTE2MzAyOVopL0NyZWF0aW9uRGF0ZShEOjIwMjQxMTA5MTYzMDI5WikrPgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMjM4IDAwMDAwIG4gCjAwMDAwMDAxMzggMDAwMDAgbiAKMDAwMDAwMDAxNSAwMDAwMCBuIAowMDAwMDAwMjg5IDAwMDAwIG4gCjAwMDAwMDAzMzQgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDYvUm9vdCA0IDAgUi9JbmZvIDUgMCBSL0lEIFs8NDVGRjI0RUE4ODQxNEEwQ0IwNThFNDY5RTg4QkUzRTc+PDQ1RkYyNEVBODg0MTRBMENCMDU4RTQ2OUU4OEJFM0U3Pl0+PgpzdGFydHhyZWYKNTAxCiUlRU9GCg==');
+  <script>
+    // Path to your PDF
+    const PDF_URL = 'arc_map.pdf';
 
-        // Load PDF from uploaded file
-        async function loadPDF() {
-            try {
-                // Change this path to match where you'll place the PDF in your GitHub repo
-                // e.g., 'Lone_Wolf_on_a_Leash.pdf' if in same directory
-                const response = await fetch('Lone_Wolf_on_a_Leash.pdf');
-                const arrayBuffer = await response.arrayBuffer();
-                
-                const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-                const container = document.getElementById('pdf-container');
-                
-                // Get viewport for scaling
-                const firstPage = await pdf.getPage(1);
-                const viewport = firstPage.getViewport({scale: 1});
-                const scale = Math.min(
-                    window.innerWidth / viewport.width,
-                    window.innerHeight / viewport.height
-                ) * 0.95;
-                
-                // Render all pages
-                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-                    const page = await pdf.getPage(pageNum);
-                    const scaledViewport = page.getViewport({scale: scale});
-                    
-                    const canvas = document.createElement('canvas');
-                    canvas.className = 'page';
-                    const context = canvas.getContext('2d');
-                    
-                    canvas.height = scaledViewport.height;
-                    canvas.width = scaledViewport.width;
-                    
-                    container.appendChild(canvas);
-                    
-                    await page.render({
-                        canvasContext: context,
-                        viewport: scaledViewport
-                    }).promise;
-                }
-            } catch (error) {
-                console.error('Error loading PDF:', error);
-                document.getElementById('pdf-container').innerHTML = 
-                    '<div style="color: white; padding: 20px; text-align: center;">Error loading PDF. Please check the file path.</div>';
-            }
-        }
+    // Zoom settings
+    let pdfDoc = null;
+    let pageNum = 1;
+    let scale = 1.0;            // current zoom
+    const MIN_SCALE = 0.1;      // let them zoom way out if they want
+    const ZOOM_STEP = 0.25;     // step per click / wheel tick
 
-        // Load PDF when page loads
-        loadPDF();
-        
-        // Reload on resize for better scaling
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
-            clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => {
-                document.getElementById('pdf-container').innerHTML = '';
-                loadPDF();
-            }, 250);
-        });
-    </script>
+    const viewer = document.getElementById('viewer');
+    const canvas = document.getElementById('pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const zoomResetBtn = document.getElementById('zoomReset');
+    const scaleDisplay = document.getElementById('scaleDisplay');
+
+    // Configure PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    // Load the PDF
+    pdfjsLib.getDocument(PDF_URL).promise.then(function (pdf) {
+      pdfDoc = pdf;
+      renderPage();
+    }).catch(function (error) {
+      console.error('Error loading PDF:', error);
+      scaleDisplay.textContent = 'Error loading PDF';
+    });
+
+    function renderPage() {
+      pdfDoc.getPage(pageNum).then(function (page) {
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const viewport = page.getViewport({ scale });
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        const renderContext = {
+          canvasContext: ctx,
+          viewport: viewport
+        };
+
+        page.render(renderContext);
+        updateScaleDisplay();
+      });
+    }
+
+    function updateScaleDisplay() {
+      scaleDisplay.textContent = Math.round(scale * 100) + '%';
+    }
+
+    function setScale(newScale, centerX, centerY) {
+      if (newScale < MIN_SCALE) newScale = MIN_SCALE;
+
+      // Preserve view center when zooming
+      const rect = viewer.getBoundingClientRect();
+      const vx = (centerX - rect.left + viewer.scrollLeft) / scale;
+      const vy = (centerY - rect.top + viewer.scrollTop) / scale;
+
+      scale = newScale;
+      renderPage();
+
+      // Once rendered, adjust scroll to keep same relative point in view
+      requestAnimationFrame(() => {
+        viewer.scrollLeft = vx * scale - (centerX - rect.left);
+        viewer.scrollTop = vy * scale - (centerY - rect.top);
+      });
+    }
+
+    // Zoom controls
+    zoomInBtn.addEventListener('click', () => {
+      setScale(scale + ZOOM_STEP, viewer.clientWidth / 2, viewer.clientHeight / 2);
+    });
+
+    zoomOutBtn.addEventListener('click', () => {
+      setScale(scale - ZOOM_STEP, viewer.clientWidth / 2, viewer.clientHeight / 2);
+    });
+
+    zoomResetBtn.addEventListener('click', () => {
+      setScale(1.0, viewer.clientWidth / 2, viewer.clientHeight / 2);
+    });
+
+    // Ctrl/Cmd + wheel to zoom, plain wheel to scroll
+    viewer.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const zoomDirection = e.deltaY > 0 ? -1 : 1;
+        const newScale = scale + zoomDirection * ZOOM_STEP;
+        setScale(newScale, e.clientX, e.clientY);
+      }
+    }, { passive: false });
+
+    // Click-and-drag panning
+    let isDragging = false;
+    let startX, startY, startScrollLeft, startScrollTop;
+
+    viewer.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      viewer.classList.add('dragging');
+      startX = e.clientX;
+      startY = e.clientY;
+      startScrollLeft = viewer.scrollLeft;
+      startScrollTop = viewer.scrollTop;
+    });
+
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+      viewer.classList.remove('dragging');
+    });
+
+    viewer.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      viewer.scrollLeft = startScrollLeft - dx;
+      viewer.scrollTop = startScrollTop - dy;
+    });
+  </script>
 </body>
 </html>
