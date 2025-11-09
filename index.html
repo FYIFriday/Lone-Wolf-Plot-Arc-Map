@@ -1,4 +1,93 @@
-<script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>arc_map.pdf Viewer</title>
+
+  <!-- PDF.js (UMD build) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #111;
+      color: #eee;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+      padding: 6px 8px;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(6px);
+      border-radius: 8px;
+      align-items: center;
+      font-size: 13px;
+      user-select: none;
+    }
+
+    #toolbar button {
+      border: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    #toolbar button:hover {
+      background: #333;
+    }
+
+    #scaleDisplay {
+      min-width: 70px;
+      text-align: right;
+      opacity: 0.9;
+    }
+
+    #viewer {
+      position: absolute;
+      inset: 0;
+      overflow: scroll;
+      cursor: grab;
+      background: #111;
+    }
+
+    #viewer.dragging {
+      cursor: grabbing;
+    }
+
+    #pdf-canvas {
+      display: block;
+      margin: auto;
+      image-rendering: crisp-edges;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="zoomOut">-</button>
+    <button id="zoomIn">+</button>
+    <button id="zoomReset">Reset</button>
+    <span id="scaleDisplay">100%</span>
+    <span style="opacity:0.7;">(Scroll = pan, Ctrl+Scroll = zoom)</span>
+  </div>
+
+  <div id="viewer">
+    <canvas id="pdf-canvas"></canvas>
+  </div>
+
+  <script>
     const PDF_URL = 'arc_map.pdf';
   
     let pdfDoc = null;
@@ -128,3 +217,5 @@
       viewer.scrollTop = startScrollTop - dy;
     });
   </script>
+</body>
+</html>
