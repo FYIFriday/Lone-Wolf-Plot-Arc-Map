@@ -50,7 +50,9 @@
         // Load PDF from uploaded file
         async function loadPDF() {
             try {
-                const response = await fetch('/mnt/user-data/uploads/Lone_Wolf_on_a_Leash.pdf');
+                // Change this path to match where you'll place the PDF in your GitHub repo
+                // e.g., 'Lone_Wolf_on_a_Leash.pdf' if in same directory
+                const response = await fetch('Lone_Wolf_on_a_Leash.pdf');
                 const arrayBuffer = await response.arrayBuffer();
                 
                 const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
