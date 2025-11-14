@@ -83,7 +83,7 @@
       background: #111;
     }
 
-    #imageContainer {
+    #canvasContainer {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -91,11 +91,11 @@
       height: 100%;
     }
 
-    #arcMap {
-      max-width: none;
+    #pdf-canvas {
       display: block;
       user-select: none;
-      -webkit-user-drag: none;
+      image-rendering: crisp-edges;
+      image-rendering: -webkit-optimize-contrast;
     }
 
     #loading {
@@ -103,9 +103,19 @@
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      font-size: 18px;
+      text-align: center;
       color: #fff;
       z-index: 50;
+    }
+
+    #loadingText {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    #loadingProgress {
+      font-size: 14px;
+      opacity: 0.7;
     }
 
     .hidden {
@@ -114,7 +124,10 @@
   </style>
 </head>
 <body>
-  <div id="loading">Loading arc map...</div>
+  <div id="loading">
+    <div id="loadingText">Loading arc map...</div>
+    <div id="loadingProgress">0%</div>
+  </div>
 
   <div id="toolbar" class="hidden">
     <button id="zoomOut" title="Zoom out">−</button>
@@ -126,18 +139,22 @@
   </div>
 
   <div id="viewer">
-    <div id="imageContainer">
-      <img id="arcMap" src="arc_map.png" alt="Arc Map">
+    <div id="canvasContainer">
+      <canvas id="pdf-canvas"></canvas>
     </div>
   </div>
 
-  <!-- Panzoom library - lightweight, battle-tested zoom/pan solution -->
+  <!-- PDF.js for rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <!-- Panzoom for smooth zoom/pan -->
   <script src="https://unpkg.com/panzoom@9.4.3/dist/panzoom.min.js"></script>
 
   <script>
-    const img = document.getElementById('arcMap');
+    const canvas = document.getElementById('pdf-canvas');
     const viewer = document.getElementById('viewer');
     const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loadingText');
+    const loadingProgress = document.getElementById('loadingProgress');
     const toolbar = document.getElementById('toolbar');
     const scaleDisplay = document.getElementById('scaleDisplay');
     const zoomInBtn = document.getElementById('zoomIn');
@@ -146,26 +163,64 @@
     const zoomFitBtn = document.getElementById('zoomFit');
 
     let panzoomInstance = null;
+    let canvasNaturalWidth = 0;
+    let canvasNaturalHeight = 0;
 
-    // Wait for image to load
-    img.addEventListener('load', () => {
+    // Configure PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    // Load and render PDF once at high quality
+    const PDF_URL = 'arc_map.pdf';
+    const RENDER_SCALE = 4; // Render at 4x for high quality
+
+    pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
+      loadingText.textContent = 'Rendering high quality image...';
+
+      return pdf.getPage(1).then((page) => {
+        // Get viewport at high quality
+        const viewport = page.getViewport({ scale: RENDER_SCALE });
+
+        // Set canvas size to rendered size
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvasNaturalWidth = viewport.width;
+        canvasNaturalHeight = viewport.height;
+
+        const ctx = canvas.getContext('2d');
+
+        const renderContext = {
+          canvasContext: ctx,
+          viewport: viewport
+        };
+
+        // Render the PDF page
+        const renderTask = page.render(renderContext);
+
+        // Show progress
+        renderTask.onProgress = (progress) => {
+          const percent = Math.round((progress.loaded / progress.total) * 100);
+          loadingProgress.textContent = percent + '%';
+        };
+
+        return renderTask.promise;
+      });
+    }).then(() => {
+      // PDF rendered! Now set up smooth zoom/pan
       loading.classList.add('hidden');
       toolbar.classList.remove('hidden');
 
-      // Initialize panzoom
-      panzoomInstance = panzoom(img, {
-        maxZoom: 10,
+      // Initialize panzoom on the canvas
+      panzoomInstance = panzoom(canvas, {
+        maxZoom: 8,
         minZoom: 0.1,
         bounds: true,
         boundsPadding: 0.1,
         zoomDoubleClickSpeed: 1,
         smoothScroll: false,
-        // Enable pinch-to-zoom on touch devices
         pinchSpeed: 1,
-        // Zoom speed for mouse wheel
         zoomSpeed: 0.065,
         onTouch: function(e) {
-          // Allow panzoom to handle all touch events
           return true;
         }
       });
@@ -178,33 +233,34 @@
       // Initial fit to screen
       fitToScreen();
       updateScaleDisplay();
-    });
-
-    img.addEventListener('error', () => {
-      loading.textContent = 'Error loading image. Please refresh.';
+    }).catch((error) => {
+      console.error('Error loading PDF:', error);
+      loadingText.textContent = 'Error loading PDF';
+      loadingProgress.textContent = error.message;
     });
 
     function updateScaleDisplay() {
       if (!panzoomInstance) return;
       const transform = panzoomInstance.getTransform();
-      const zoom = Math.round(transform.scale * 100);
+      // The canvas is rendered at RENDER_SCALE, so actual zoom is transform.scale / RENDER_SCALE
+      const actualZoom = (transform.scale / RENDER_SCALE) * 100;
+      const zoom = Math.round(actualZoom);
       scaleDisplay.textContent = zoom + '%';
     }
 
     function fitToScreen() {
-      if (!panzoomInstance) return;
+      if (!panzoomInstance || !canvasNaturalWidth) return;
 
       const viewerRect = viewer.getBoundingClientRect();
-      const imgRect = img.getBoundingClientRect();
 
-      // Calculate scale to fit image in viewport
-      const scaleX = viewerRect.width / img.naturalWidth;
-      const scaleY = viewerRect.height / img.naturalHeight;
+      // Calculate scale to fit canvas in viewport
+      const scaleX = viewerRect.width / canvasNaturalWidth;
+      const scaleY = viewerRect.height / canvasNaturalHeight;
       const scale = Math.min(scaleX, scaleY) * 0.95; // 95% to add some padding
 
-      // Center the image
-      const x = (viewerRect.width - img.naturalWidth * scale) / 2;
-      const y = (viewerRect.height - img.naturalHeight * scale) / 2;
+      // Center the canvas
+      const x = (viewerRect.width - canvasNaturalWidth * scale) / 2;
+      const y = (viewerRect.height - canvasNaturalHeight * scale) / 2;
 
       panzoomInstance.moveTo(x, y);
       panzoomInstance.zoomAbs(0, 0, scale);
@@ -228,9 +284,8 @@
 
     zoomResetBtn.addEventListener('click', () => {
       if (!panzoomInstance) return;
-      panzoomInstance.moveTo(0, 0);
-      panzoomInstance.zoomAbs(0, 0, 1);
-      updateScaleDisplay();
+      // Reset to fit screen (our "100%" baseline)
+      fitToScreen();
     });
 
     zoomFitBtn.addEventListener('click', () => {
@@ -242,8 +297,7 @@
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
-        // Optionally re-fit on resize - commented out to preserve user's zoom level
-        // fitToScreen();
+        // Preserve zoom level on resize
       }, 250);
     });
   </script>
