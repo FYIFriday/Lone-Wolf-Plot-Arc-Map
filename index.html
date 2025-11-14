@@ -167,6 +167,7 @@
     let panzoomInstance = null;
     let canvasNaturalWidth = 0;
     let canvasNaturalHeight = 0;
+    let renderScale = 1; // Will be set dynamically
 
     // Check if libraries loaded
     if (typeof pdfjsLib === 'undefined') {
@@ -187,25 +188,48 @@
       pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
-      // Load and render PDF once at high quality
       const PDF_URL = 'arc_map.pdf';
-      const RENDER_SCALE = 4; // Render at 4x for high quality
 
       loadingText.textContent = 'Loading PDF...';
       console.log('Loading PDF from:', PDF_URL);
 
       pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
         console.log('PDF loaded, pages:', pdf.numPages);
-        loadingText.textContent = 'Rendering high quality image...';
+        loadingText.textContent = 'Calculating optimal quality...';
 
         return pdf.getPage(1).then((page) => {
           console.log('Got page 1');
-          // Get viewport at high quality
-          const viewport = page.getViewport({ scale: RENDER_SCALE });
 
-          console.log('Viewport size:', viewport.width, 'x', viewport.height);
+          // Get base viewport at scale 1
+          const baseViewport = page.getViewport({ scale: 1 });
+          const baseWidth = baseViewport.width;
+          const baseHeight = baseViewport.height;
 
-          // Set canvas size to rendered size
+          console.log('PDF base size:', baseWidth, 'x', baseHeight);
+
+          // Canvas size limits vary by browser:
+          // Safari: 268,435,456 pixels (width * height)
+          // Chrome/Firefox: Higher limits but still finite
+          // Use conservative limit that works everywhere
+          const MAX_CANVAS_PIXELS = 250000000; // 250 megapixels (safe for Safari)
+
+          // Calculate maximum safe render scale
+          const maxScale = Math.sqrt(MAX_CANVAS_PIXELS / (baseWidth * baseHeight));
+
+          // Use slightly lower than max for safety margin, but at least 1.5x for quality
+          renderScale = Math.max(1.5, Math.min(maxScale * 0.95, 3.0));
+
+          console.log('Using render scale:', renderScale.toFixed(2));
+
+          // Get viewport at calculated scale
+          const viewport = page.getViewport({ scale: renderScale });
+
+          console.log('Canvas size:', Math.round(viewport.width), 'x', Math.round(viewport.height),
+                      '=', Math.round(viewport.width * viewport.height / 1000000), 'megapixels');
+
+          loadingText.textContent = 'Rendering high quality image...';
+
+          // Set canvas size
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           canvasNaturalWidth = viewport.width;
@@ -225,7 +249,6 @@
           renderTask.onProgress = (progress) => {
             const percent = Math.round((progress.loaded / progress.total) * 100);
             loadingProgress.textContent = percent + '%';
-            console.log('Render progress:', percent + '%');
           };
 
           return renderTask.promise;
@@ -238,8 +261,8 @@
 
         // Initialize panzoom on the canvas
         panzoomInstance = panzoom(canvas, {
-          maxZoom: 8,
-          minZoom: 0.1,
+          maxZoom: 10,
+          minZoom: 0.05,
           bounds: true,
           boundsPadding: 0.1,
           zoomDoubleClickSpeed: 1,
@@ -273,8 +296,8 @@
     function updateScaleDisplay() {
       if (!panzoomInstance) return;
       const transform = panzoomInstance.getTransform();
-      // The canvas is rendered at RENDER_SCALE (4), so actual zoom is transform.scale / 4
-      const actualZoom = (transform.scale / 4) * 100;
+      // The canvas is rendered at renderScale, so actual zoom is transform.scale / renderScale
+      const actualZoom = (transform.scale / renderScale) * 100;
       const zoom = Math.round(actualZoom);
       scaleDisplay.textContent = zoom + '%';
     }
