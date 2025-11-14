@@ -2,16 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>arc_map.pdf Viewer</title>
-
-</head>
-  <!-- PDF.js (UMD build) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Arc Map Viewer</title>
 
   <style>
-    html, body {
+    * {
       margin: 0;
       padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
       height: 100%;
       overflow: hidden;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -23,272 +24,228 @@
       position: fixed;
       top: 10px;
       left: 10px;
-      z-index: 10;
+      z-index: 100;
       display: flex;
       gap: 8px;
-      padding: 6px 8px;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(6px);
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(8px);
       border-radius: 8px;
       align-items: center;
       font-size: 13px;
       user-select: none;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 
     #toolbar button {
       border: none;
-      padding: 4px 8px;
+      padding: 6px 12px;
       border-radius: 4px;
-      background: #222;
+      background: #333;
       color: #eee;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 13px;
+      transition: background 0.2s;
     }
 
     #toolbar button:hover {
-      background: #333;
+      background: #444;
+    }
+
+    #toolbar button:active {
+      background: #555;
     }
 
     #scaleDisplay {
-      min-width: 70px;
-      text-align: right;
-      opacity: 0.9;
+      min-width: 60px;
+      text-align: center;
+      font-weight: 500;
+      color: #fff;
+    }
+
+    .hint {
+      opacity: 0.6;
+      font-size: 12px;
+      display: none;
+    }
+
+    @media (min-width: 768px) {
+      .hint {
+        display: inline;
+      }
     }
 
     #viewer {
       position: absolute;
       inset: 0;
-      overflow: scroll;
-      cursor: grab;
+      overflow: hidden;
+      touch-action: none;
       background: #111;
     }
 
-    #viewer.dragging {
-      cursor: grabbing;
+    #imageContainer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
     }
 
-    #pdf-canvas {
+    #arcMap {
+      max-width: none;
       display: block;
-      margin: auto;
-      image-rendering: crisp-edges;
-      image-rendering: pixelated;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    #loading {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 18px;
+      color: #fff;
+      z-index: 50;
+    }
+
+    .hidden {
+      display: none;
     }
   </style>
 </head>
 <body>
-  <div id="toolbar">
-    <button id="zoomOut">-</button>
-    <button id="zoomIn">+</button>
-    <button id="zoomReset">Reset</button>
+  <div id="loading">Loading arc map...</div>
+
+  <div id="toolbar" class="hidden">
+    <button id="zoomOut" title="Zoom out">−</button>
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomReset" title="Reset zoom">Reset</button>
+    <button id="zoomFit" title="Fit to screen">Fit</button>
     <span id="scaleDisplay">100%</span>
-    <span style="opacity:0.7;">(Two-finger scroll = pan, pinch with ⌘/Ctrl = zoom)</span>
+    <span class="hint">Scroll/pinch to zoom • Drag to pan</span>
   </div>
 
   <div id="viewer">
-    <canvas id="pdf-canvas"></canvas>
+    <div id="imageContainer">
+      <img id="arcMap" src="arc_map.png" alt="Arc Map">
+    </div>
   </div>
 
+  <!-- Panzoom library - lightweight, battle-tested zoom/pan solution -->
+  <script src="https://unpkg.com/panzoom@9.4.3/dist/panzoom.min.js"></script>
+
   <script>
-    window.addEventListener('DOMContentLoaded', () => {
-      const PDF_URL = 'arc_map.pdf';
+    const img = document.getElementById('arcMap');
+    const viewer = document.getElementById('viewer');
+    const loading = document.getElementById('loading');
+    const toolbar = document.getElementById('toolbar');
+    const scaleDisplay = document.getElementById('scaleDisplay');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const zoomResetBtn = document.getElementById('zoomReset');
+    const zoomFitBtn = document.getElementById('zoomFit');
 
-      let pdfDoc = null;
-      let pageNum = 1;
+    let panzoomInstance = null;
 
-      // Actual render scale (what the PDF is drawn at)
-      let scale = 1.0;
+    // Wait for image to load
+    img.addEventListener('load', () => {
+      loading.classList.add('hidden');
+      toolbar.classList.remove('hidden');
 
-      // Limits
-      const MIN_SCALE = 0.1;
-      const MAX_SCALE = 32;
-      const BUTTON_ZOOM_STEP = 0.25;
-
-      const viewer = document.getElementById('viewer');
-      const canvas = document.getElementById('pdf-canvas');
-      const ctx = canvas.getContext('2d');
-      const zoomInBtn = document.getElementById('zoomIn');
-      const zoomOutBtn = document.getElementById('zoomOut');
-      const zoomResetBtn = document.getElementById('zoomReset');
-      const scaleDisplay = document.getElementById('scaleDisplay');
-
-      let pdfReady = false;
-
-      // Render queue flags so we don't spam renders
-      let isRendering = false;
-      let zoomFrameRequested = false;
-      let lastZoomScale = scale;
-      let lastZoomX = 0;
-      let lastZoomY = 0;
-
-      // Configure PDF.js worker
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-
-      // Load the PDF
-      pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
-        pdfDoc = pdf;
-        pdfReady = true;
-        renderPage(); // initial render
-      }).catch((error) => {
-        console.error('Error loading PDF:', error);
-        scaleDisplay.textContent = 'Error loading PDF';
-      });
-
-      function renderPage() {
-        if (!pdfReady || !pdfDoc) return;
-        if (isRendering) return; // let queued zoom handle updates
-
-        isRendering = true;
-
-        pdfDoc.getPage(pageNum).then((page) => {
-          const viewport = page.getViewport({ scale });
-
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-
-          const renderContext = {
-            canvasContext: ctx,
-            viewport: viewport
-          };
-
-          const renderTask = page.render(renderContext);
-          return renderTask.promise;
-        }).then(() => {
-          isRendering = false;
-          updateScaleDisplay();
-
-          // If something queued another zoom during render, handle it now
-          if (zoomFrameRequested) {
-            zoomFrameRequested = false;
-            setScale(lastZoomScale, lastZoomX, lastZoomY);
-          }
-        }).catch((err) => {
-          isRendering = false;
-          console.error('Render error:', err);
-        });
-      }
-
-      function updateScaleDisplay() {
-        scaleDisplay.textContent = Math.round(scale * 100) + '%';
-      }
-
-      function setScale(newScale, centerX, centerY) {
-        if (!pdfReady) return;
-
-        // Clamp
-        if (newScale < MIN_SCALE) newScale = MIN_SCALE;
-        if (newScale > MAX_SCALE) newScale = MAX_SCALE;
-
-        // Ignore microscopic changes to avoid stutter
-        if (Math.abs(newScale - scale) < scale * 0.02) return;
-
-        const rect = viewer.getBoundingClientRect();
-
-        // Current scroll position mapped into PDF coords
-        const vx = (centerX - rect.left + viewer.scrollLeft) / scale;
-        const vy = (centerY - rect.top + viewer.scrollTop) / scale;
-
-        scale = newScale;
-
-        renderPage();
-
-        // After render, recenter so the point under cursor stays under cursor
-        requestAnimationFrame(() => {
-          const newScrollLeft = vx * scale - (centerX - rect.left);
-          const newScrollTop = vy * scale - (centerY - rect.top);
-
-          viewer.scrollLeft = newScrollLeft;
-          viewer.scrollTop = newScrollTop;
-        });
-      }
-
-      // Smooth-ish zoom scheduler for wheel/pinch events
-      function smartZoom(targetScale, cx, cy) {
-        if (!pdfReady) return;
-
-        // Clamp
-        if (targetScale < MIN_SCALE) targetScale = MIN_SCALE;
-        if (targetScale > MAX_SCALE) targetScale = MAX_SCALE;
-
-        // Coalesce rapid events into one render per frame
-        lastZoomScale = targetScale;
-        lastZoomX = cx;
-        lastZoomY = cy;
-
-        if (!zoomFrameRequested && !isRendering) {
-          zoomFrameRequested = true;
-          requestAnimationFrame(() => {
-            zoomFrameRequested = false;
-            setScale(lastZoomScale, lastZoomX, lastZoomY);
-          });
+      // Initialize panzoom
+      panzoomInstance = panzoom(img, {
+        maxZoom: 10,
+        minZoom: 0.1,
+        bounds: true,
+        boundsPadding: 0.1,
+        zoomDoubleClickSpeed: 1,
+        smoothScroll: false,
+        // Enable pinch-to-zoom on touch devices
+        pinchSpeed: 1,
+        // Zoom speed for mouse wheel
+        zoomSpeed: 0.065,
+        onTouch: function(e) {
+          // Allow panzoom to handle all touch events
+          return true;
         }
-      }
-
-      // Toolbar zoom (uses fixed steps)
-      zoomInBtn.addEventListener('click', () => {
-        const cx = viewer.clientWidth / 2;
-        const cy = viewer.clientHeight / 2;
-        smartZoom(scale + BUTTON_ZOOM_STEP, cx, cy);
       });
 
-      zoomOutBtn.addEventListener('click', () => {
-        const cx = viewer.clientWidth / 2;
-        const cy = viewer.clientHeight / 2;
-        smartZoom(scale - BUTTON_ZOOM_STEP, cx, cy);
+      // Update scale display on zoom
+      panzoomInstance.on('zoom', (e) => {
+        updateScaleDisplay();
       });
 
-      zoomResetBtn.addEventListener('click', () => {
-        const cx = viewer.clientWidth / 2;
-        const cy = viewer.clientHeight / 2;
-        smartZoom(1.0, cx, cy);
-      });
+      // Initial fit to screen
+      fitToScreen();
+      updateScaleDisplay();
+    });
 
-      // Ctrl/Cmd + wheel / pinch zoom (Mac trackpad friendly)
-      viewer.addEventListener('wheel', (e) => {
-        if (!pdfReady) return;
+    img.addEventListener('error', () => {
+      loading.textContent = 'Error loading image. Please refresh.';
+    });
 
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
+    function updateScaleDisplay() {
+      if (!panzoomInstance) return;
+      const transform = panzoomInstance.getTransform();
+      const zoom = Math.round(transform.scale * 100);
+      scaleDisplay.textContent = zoom + '%';
+    }
 
-          // Trackpad pinch usually gives small continuous deltaY.
-          // Use an exponential factor for smooth zoom.
-          const zoomFactor = Math.exp(-e.deltaY * 0.002);
-          const targetScale = scale * zoomFactor;
+    function fitToScreen() {
+      if (!panzoomInstance) return;
 
-          smartZoom(targetScale, e.clientX, e.clientY);
-        }
-        // plain wheel = scroll/pan, let browser handle it
-      }, { passive: false });
+      const viewerRect = viewer.getBoundingClientRect();
+      const imgRect = img.getBoundingClientRect();
 
-      // Click-and-drag panning
-      let isDragging = false;
-      let startX, startY, startScrollLeft, startScrollTop;
+      // Calculate scale to fit image in viewport
+      const scaleX = viewerRect.width / img.naturalWidth;
+      const scaleY = viewerRect.height / img.naturalHeight;
+      const scale = Math.min(scaleX, scaleY) * 0.95; // 95% to add some padding
 
-      viewer.addEventListener('mousedown', (e) => {
-        isDragging = true;
-        viewer.classList.add('dragging');
-        startX = e.clientX;
-        startY = e.clientY;
-        startScrollLeft = viewer.scrollLeft;
-        startScrollTop = viewer.scrollTop;
-      });
+      // Center the image
+      const x = (viewerRect.width - img.naturalWidth * scale) / 2;
+      const y = (viewerRect.height - img.naturalHeight * scale) / 2;
 
-      document.addEventListener('mouseup', () => {
-        isDragging = false;
-        viewer.classList.remove('dragging');
-      });
+      panzoomInstance.moveTo(x, y);
+      panzoomInstance.zoomAbs(0, 0, scale);
+      updateScaleDisplay();
+    }
 
-      viewer.addEventListener('mousemove', (e) => {
-        if (!isDragging) return;
-        e.preventDefault();
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-        viewer.scrollLeft = startScrollLeft - dx;
-        viewer.scrollTop = startScrollTop - dy;
-      });
+    // Zoom buttons
+    zoomInBtn.addEventListener('click', () => {
+      if (!panzoomInstance) return;
+      const transform = panzoomInstance.getTransform();
+      const newScale = transform.scale * 1.3;
+      panzoomInstance.smoothZoom(0, 0, newScale);
+    });
+
+    zoomOutBtn.addEventListener('click', () => {
+      if (!panzoomInstance) return;
+      const transform = panzoomInstance.getTransform();
+      const newScale = transform.scale / 1.3;
+      panzoomInstance.smoothZoom(0, 0, newScale);
+    });
+
+    zoomResetBtn.addEventListener('click', () => {
+      if (!panzoomInstance) return;
+      panzoomInstance.moveTo(0, 0);
+      panzoomInstance.zoomAbs(0, 0, 1);
+      updateScaleDisplay();
+    });
+
+    zoomFitBtn.addEventListener('click', () => {
+      fitToScreen();
+    });
+
+    // Handle window resize
+    let resizeTimeout;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        // Optionally re-fit on resize - commented out to preserve user's zoom level
+        // fitToScreen();
+      }, 250);
     });
   </script>
-</body>
-</html>
 </body>
 </html>
