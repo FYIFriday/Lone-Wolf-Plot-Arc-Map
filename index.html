@@ -125,8 +125,8 @@
 </head>
 <body>
   <div id="loading">
-    <div id="loadingText">Loading arc map...</div>
-    <div id="loadingProgress">0%</div>
+    <div id="loadingText">Initializing...</div>
+    <div id="loadingProgress"></div>
   </div>
 
   <div id="toolbar" class="hidden">
@@ -150,6 +150,8 @@
   <script src="https://unpkg.com/panzoom@9.4.3/dist/panzoom.min.js"></script>
 
   <script>
+    console.log('Script started');
+
     const canvas = document.getElementById('pdf-canvas');
     const viewer = document.getElementById('viewer');
     const loading = document.getElementById('loading');
@@ -166,84 +168,113 @@
     let canvasNaturalWidth = 0;
     let canvasNaturalHeight = 0;
 
-    // Configure PDF.js worker
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    // Check if libraries loaded
+    if (typeof pdfjsLib === 'undefined') {
+      console.error('PDF.js failed to load');
+      loadingText.textContent = 'Error: PDF.js library failed to load';
+      loadingProgress.textContent = 'Please refresh the page';
+    } else if (typeof panzoom === 'undefined') {
+      console.error('Panzoom failed to load');
+      loadingText.textContent = 'Error: Panzoom library failed to load';
+      loadingProgress.textContent = 'Please refresh the page';
+    } else {
+      console.log('Libraries loaded successfully');
+      initViewer();
+    }
 
-    // Load and render PDF once at high quality
-    const PDF_URL = 'arc_map.pdf';
-    const RENDER_SCALE = 4; // Render at 4x for high quality
+    function initViewer() {
+      // Configure PDF.js worker
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
-    pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
-      loadingText.textContent = 'Rendering high quality image...';
+      // Load and render PDF once at high quality
+      const PDF_URL = 'arc_map.pdf';
+      const RENDER_SCALE = 4; // Render at 4x for high quality
 
-      return pdf.getPage(1).then((page) => {
-        // Get viewport at high quality
-        const viewport = page.getViewport({ scale: RENDER_SCALE });
+      loadingText.textContent = 'Loading PDF...';
+      console.log('Loading PDF from:', PDF_URL);
 
-        // Set canvas size to rendered size
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvasNaturalWidth = viewport.width;
-        canvasNaturalHeight = viewport.height;
+      pdfjsLib.getDocument(PDF_URL).promise.then((pdf) => {
+        console.log('PDF loaded, pages:', pdf.numPages);
+        loadingText.textContent = 'Rendering high quality image...';
 
-        const ctx = canvas.getContext('2d');
+        return pdf.getPage(1).then((page) => {
+          console.log('Got page 1');
+          // Get viewport at high quality
+          const viewport = page.getViewport({ scale: RENDER_SCALE });
 
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport
-        };
+          console.log('Viewport size:', viewport.width, 'x', viewport.height);
 
-        // Render the PDF page
-        const renderTask = page.render(renderContext);
+          // Set canvas size to rendered size
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          canvasNaturalWidth = viewport.width;
+          canvasNaturalHeight = viewport.height;
 
-        // Show progress
-        renderTask.onProgress = (progress) => {
-          const percent = Math.round((progress.loaded / progress.total) * 100);
-          loadingProgress.textContent = percent + '%';
-        };
+          const ctx = canvas.getContext('2d');
 
-        return renderTask.promise;
-      });
-    }).then(() => {
-      // PDF rendered! Now set up smooth zoom/pan
-      loading.classList.add('hidden');
-      toolbar.classList.remove('hidden');
+          const renderContext = {
+            canvasContext: ctx,
+            viewport: viewport
+          };
 
-      // Initialize panzoom on the canvas
-      panzoomInstance = panzoom(canvas, {
-        maxZoom: 8,
-        minZoom: 0.1,
-        bounds: true,
-        boundsPadding: 0.1,
-        zoomDoubleClickSpeed: 1,
-        smoothScroll: false,
-        pinchSpeed: 1,
-        zoomSpeed: 0.065,
-        onTouch: function(e) {
-          return true;
-        }
-      });
+          // Render the PDF page
+          const renderTask = page.render(renderContext);
 
-      // Update scale display on zoom
-      panzoomInstance.on('zoom', (e) => {
+          // Show progress
+          renderTask.onProgress = (progress) => {
+            const percent = Math.round((progress.loaded / progress.total) * 100);
+            loadingProgress.textContent = percent + '%';
+            console.log('Render progress:', percent + '%');
+          };
+
+          return renderTask.promise;
+        });
+      }).then(() => {
+        console.log('PDF rendered successfully');
+        // PDF rendered! Now set up smooth zoom/pan
+        loading.classList.add('hidden');
+        toolbar.classList.remove('hidden');
+
+        // Initialize panzoom on the canvas
+        panzoomInstance = panzoom(canvas, {
+          maxZoom: 8,
+          minZoom: 0.1,
+          bounds: true,
+          boundsPadding: 0.1,
+          zoomDoubleClickSpeed: 1,
+          smoothScroll: false,
+          pinchSpeed: 1,
+          zoomSpeed: 0.065,
+          onTouch: function(e) {
+            return true;
+          }
+        });
+
+        console.log('Panzoom initialized');
+
+        // Update scale display on zoom
+        panzoomInstance.on('zoom', (e) => {
+          updateScaleDisplay();
+        });
+
+        // Initial fit to screen
+        fitToScreen();
         updateScaleDisplay();
-      });
 
-      // Initial fit to screen
-      fitToScreen();
-      updateScaleDisplay();
-    }).catch((error) => {
-      console.error('Error loading PDF:', error);
-      loadingText.textContent = 'Error loading PDF';
-      loadingProgress.textContent = error.message;
-    });
+        console.log('Viewer ready');
+      }).catch((error) => {
+        console.error('Error loading or rendering PDF:', error);
+        loadingText.textContent = 'Error loading PDF';
+        loadingProgress.textContent = error.message || 'Unknown error';
+      });
+    }
 
     function updateScaleDisplay() {
       if (!panzoomInstance) return;
       const transform = panzoomInstance.getTransform();
-      // The canvas is rendered at RENDER_SCALE, so actual zoom is transform.scale / RENDER_SCALE
-      const actualZoom = (transform.scale / RENDER_SCALE) * 100;
+      // The canvas is rendered at RENDER_SCALE (4), so actual zoom is transform.scale / 4
+      const actualZoom = (transform.scale / 4) * 100;
       const zoom = Math.round(actualZoom);
       scaleDisplay.textContent = zoom + '%';
     }
